@@ -1,0 +1,28 @@
+services:
+  photo-print:
+    image: shiguang-print:local
+    build:
+      context: .
+      args:
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+    user: "${PUID:-1000}:${PGID:-1000}"
+    restart: unless-stopped
+    ports:
+      - "${PORT:-18318}:8080"
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      PHOTO_ROOT: /print-workspace/待打印
+      COMPLETED_ROOT: /print-workspace/已完成
+      DATA_ROOT: /data
+      PRINTER_URI: ${PRINTER_URI:-}
+      PRINTER_NAME: ${PRINTER_NAME:-照片打印机}
+    volumes:
+      - ${PHOTO_WORKSPACE:-./photos}:/print-workspace:rw
+      - ${DATA_DIRECTORY:-./data}:/data:rw
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 768m
+    cpus: 1.5
