@@ -4,6 +4,8 @@
 
 Self-hosted photo printing for your NAS: folder-based queues, browser layouts, IPP printing, and automatic archiving.
 
+下一版计划更名为“纸间 Paperlane”，并研究精确尺寸与多打印机能力协商。详见 [v0.2.0 设计方案](docs/roadmap-v0.2.0.md)；这些新增能力尚未发布。
+
 > **v0.1.0 预览版。** 已在富士小俏印 2Pro 上完成 IPP 能力与无出纸参数校验，并通过模拟打印机和合成照片测试；首张实际出片效果仍待验证。其他打印机尚未验证。本项目与富士胶片没有隶属关系。
 
 ## 工作流程
