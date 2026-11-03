@@ -2,9 +2,9 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>拾光印 · NAS 照片打印</title>
+  <title>纸间 Paperlane · NAS 照片打印</title>
   <meta name="theme-color" content="#f4f2ec"><meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-title" content="拾光印">
+  <meta name="apple-mobile-web-app-title" content="纸间 Paperlane">
   <link rel="icon" href="/icon.svg" type="image/svg+xml"><link rel="manifest" href="/manifest.webmanifest">
   <link rel="apple-touch-icon" href="/touch-icon.png">
   <link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script>
@@ -13,7 +13,7 @@
   <section id="login" class="login-screen">
     <form id="login-form" class="login-card">
       <img class="brand-icon" src="/icon.svg" alt="" width="52" height="52">
-      <p class="eyebrow">YOUR MOMENTS, IN PRINT</p><h1>拾光印<span>把喜欢的瞬间，留在手边。</span></h1>
+      <p class="eyebrow">YOUR MOMENTS, IN PRINT</p><h1>纸间 Paperlane<span>把喜欢的瞬间，留在手边。</span></h1>
       <p class="muted">上传到待打印文件夹，选片后轻松打印。</p>
       <label for="password">访问密码</label><input id="password" type="password" autocomplete="current-password" placeholder="输入照片打印服务的密码" required>
       <button class="primary" id="login-button" type="submit">打开待打印照片 <span aria-hidden="true">↗</span></button>
@@ -24,15 +24,16 @@
   </section>
   <div id="application" hidden>
     <header class="topbar">
-      <a class="brand" href="/"><img src="/icon.svg" alt="" width="36" height="36"><span>拾光印<small>家庭照片打印室</small></span></a>
+      <a class="brand" href="/"><img src="/icon.svg" alt="" width="36" height="36"><span>纸间 Paperlane<small>家庭照片打印室</small></span></a>
       <nav aria-label="主导航"><button id="gallery-tab" class="nav-button active">待打印</button><button id="jobs-tab" class="nav-button">打印记录 <span id="jobs-badge"></span></button></nav>
       <div class="account-actions"><button id="settings" class="text-button">设置</button><button id="logout" class="text-button">退出</button></div>
     </header>
     <main>
       <section class="intro">
         <div><p class="eyebrow">A LITTLE PRINT, A LASTING MEMORY</p><h1>下一张，值得留在手边。</h1><p class="muted">上传喜欢的照片，打印完成后自动归档。</p></div>
-        <div class="printer-card"><span id="printer-dot" class="status-dot"></span><div><strong id="printer-name">照片打印机</strong><small id="printer-message">正在连接…</small></div><span class="paper-label">6 寸相纸</span></div>
+        <div class="printer-card"><span id="printer-dot" class="status-dot"></span><div><strong id="printer-name">照片打印机</strong><small id="printer-message">正在连接…</small></div><button id="calibrate" class="secondary">标尺测试页</button></div>
       </section>
+      <label class="device-picker">打印到 <select id="main-printer" aria-label="选择打印机"></select></label>
       <section id="gallery-view" aria-label="照片库">
         <div class="library-heading"><div><h2>待打印照片 <span id="library-count" class="count"></span></h2><p id="library-message" class="muted small">正在读取待打印文件夹…</p></div><button id="refresh" class="secondary">↻ 刷新列表</button></div>
         <div class="filters"><label>文件月份 <select id="month-filter"><option value="">最近照片</option></select></label><label>文件日期 <input id="day-filter" type="date" aria-label="按文件日期筛选"></label><button id="clear-filter" class="text-button">查看最近</button><span class="filter-note">点选照片，最多 10 张</span></div>
@@ -42,16 +43,19 @@
       <section id="jobs-view" hidden><div class="library-heading"><div><h2>打印记录</h2><p class="muted small">发送后等待打印机报告结果，请勿重复提交。</p></div><button id="refresh-jobs" class="secondary">↻ 刷新</button></div><div id="jobs-list" class="jobs-list"></div></section>
     </main>
     <div id="selection-dock" class="selection-dock" hidden><div><strong>已选 <span id="selected-count">0</span> 张照片</strong><small>下一步确认排版，暂不打印</small></div><button id="clear-selection" class="text-button">清空</button><button id="open-preview" class="primary">排版与预览 <span aria-hidden="true">→</span></button></div>
-    <footer>拾光印 <span>·</span> 照片在家中，回忆在手中。</footer>
+    <footer>纸间 Paperlane <span>·</span> 照片在家中，回忆在手中。</footer>
   </div>
   <dialog id="preview-dialog" aria-labelledby="preview-title">
     <div class="dialog-heading"><div><p class="eyebrow">READY WHEN YOU ARE</p><h2 id="preview-title">打印前，最后看一眼。</h2></div><button id="close-preview" class="close-button" aria-label="关闭预览">×</button></div>
     <div class="preview-layout"><div class="preview-stage"><div id="preview-loading">正在生成打印预览…</div><img id="preview-image" alt="将发送给打印机的照片排版" hidden><div class="preview-pager"><button id="previous-preview" class="circle-button" aria-label="上一张">←</button><span id="preview-position"></span><button id="next-preview" class="circle-button" aria-label="下一张">→</button></div></div>
       <div class="preview-controls"><p class="paper-spec">照片排版 <span id="paper-description">6 寸相纸 · 300 dpi</span></p>
-      <label class="setting-label">使用相纸<select id="paper-size"><option value="6inch">6 寸 · 4 × 6 英寸</option></select></label>
-      <p id="paper-note" class="small muted">本服务当前使用 6 寸相纸。小尺寸照片通过排版后裁切获得，无需更换小相纸。</p>
-      <label class="setting-label">排版模板<select id="layout"><option value="single">单张照片</option><option value="duo">上下双拼 · 每页 2 张</option><option value="grid4">四宫格 · 每页 4 张</option><option value="grid9">九宫格 · 每页 9 张</option><option value="square3">3 寸方形双拼 · 在 6 寸纸上裁切</option></select></label>
-      <div class="setting-row"><label>外边距<select id="border"><option value="0">无</option><option value="2">2 mm</option><option value="5">5 mm</option><option value="10">10 mm</option></select></label><label>照片间距<select id="gap"><option value="0">无</option><option value="2" selected>2 mm</option><option value="5">5 mm</option></select></label><label>底色<select id="background"><option value="#ffffff">白色</option><option value="#f4ead7">奶油色</option><option value="#151515">黑色</option></select></label></div><fieldset><legend>照片适配</legend><label class="option"><input type="radio" name="fit" value="contain" checked><span><strong>完整保留</strong><small>不裁剪照片，比例不同时留白</small></span></label><label class="option"><input type="radio" name="fit" value="cover"><span><strong>铺满相纸</strong><small>居中裁剪，打印前请检查人物边缘</small></span></label></fieldset>
+      <label class="setting-label">打印机<select id="preview-printer"></select></label>
+      <label class="setting-label">分辨率<select id="resolution"></select></label>
+      <label class="setting-label">实际装入的相纸<select id="paper-size"></select></label>
+      <div id="custom-paper" class="setting-row" hidden><label>纸宽 mm<input id="paper-width" type="number" min="10" max="1000" value="101.6" step="0.1"></label><label>纸高 mm<input id="paper-height" type="number" min="10" max="1000" value="152.4" step="0.1"></label></div><p id="paper-note" class="small muted">选项来自设备上报，请确认实际装纸一致。照片尺寸可在下面另行设置。</p>
+      <label class="setting-label">排版模板<select id="layout"><option value="single">单张照片</option><option value="duo">上下双拼 · 每页 2 张</option><option value="grid4">四宫格 · 每页 4 张</option><option value="grid9">九宫格 · 每页 9 张</option><option value="square3">3 × 3 英寸方形双拼</option><option value="custom">自定义照片尺寸 · 自动排版</option></select></label>
+<div id="photo-dimensions" hidden><div class="setting-row"><label>照片宽<input id="photo-width" type="number" min="0.1" max="1000" value="35" step="0.1"></label><label>照片高<input id="photo-height" type="number" min="0.1" max="1000" value="45" step="0.1"></label><label>单位<select id="photo-unit"><option value="1">毫米</option><option value="10">厘米</option><option value="25.4">英寸</option></select></label></div><label class="option"><input id="repeat-photo" type="checkbox">同一张照片铺满此页（仅选 1 张时）</label><p class="small muted">尺寸指裁切格子的外框。“完整保留”可能在格子内留白。</p></div>
+      <div class="setting-row"><label>额外外边距<select id="border"><option value="0">无</option><option value="2">2 mm</option><option value="5">5 mm</option><option value="10">10 mm</option></select></label><label>照片间距<select id="gap"><option value="0">无</option><option value="2" selected>2 mm</option><option value="5">5 mm</option></select></label><label>底色<select id="background"><option value="#ffffff">白色</option><option value="#f4ead7">奶油色</option><option value="#151515">黑色</option></select></label></div><fieldset><legend>照片适配</legend><label class="option"><input type="radio" name="fit" value="contain" checked><span><strong>完整保留</strong><small>不裁剪照片，比例不同时留白</small></span></label><label class="option"><input type="radio" name="fit" value="cover"><span><strong>铺满相纸</strong><small>居中裁剪，打印前请检查人物边缘</small></span></label></fieldset>
       <label class="setting-label">调整当前页照片<select id="edit-photo"></select></label>
       <div id="crop-controls" class="crop-controls" hidden><label>左右构图<input id="crop-x" type="range" min="0" max="100" value="50"></label><label>上下构图<input id="crop-y" type="range" min="0" max="100" value="50"></label></div>
       <button id="rotate-photo" class="secondary full">↻ 将当前照片旋转 90°</button><p id="resolution-note" class="warning" hidden>这张照片分辨率较低，出片可能不够清晰。</p>
@@ -61,7 +65,9 @@
     </div>
   </dialog>
   <dialog id="settings-dialog" class="settings-dialog" aria-labelledby="settings-title">
-    <div class="dialog-heading"><div><p class="eyebrow">YOUR PRINT ROOM</p><h2 id="settings-title">修改访问密码</h2></div><button id="close-settings" class="close-button" aria-label="关闭设置">×</button></div>
+    <div class="dialog-heading"><div><p class="eyebrow">YOUR PRINT ROOM</p><h2 id="settings-title">打印室设置</h2></div><button id="close-settings" class="close-button" aria-label="关闭设置">×</button></div>
+    <section class="printer-settings"><h3>打印机</h3><p class="muted small">可添加不同品牌的 IPP/IPPS 设备；支持 JPEG、精确参数校验与任务状态的型号才可直接使用。USB、仅专用 APP 或仅光栅格式的设备暂不支持。</p><div id="device-list"></div>
+    <form id="printer-form"><label for="device-name">设备名称</label><input id="device-name" maxlength="80" placeholder="例如：书房照片打印机" required><label for="device-uri">IPP 地址</label><input id="device-uri" maxlength="512" placeholder="ipp://printer.local:631/ipp/print" required><p class="small muted">使用设备说明或原有打印配置中的地址。查询能力不会出纸；IPPS 会检查证书。</p><button id="add-device" class="secondary" type="submit">查询能力并添加</button><p id="device-error" class="error" role="alert"></p></form></section><h3>修改访问密码</h3>
     <form id="password-form" class="password-form">
       <p class="muted small">输入当前密码，设置一个你方便记住的新密码。修改后，其他设备需要重新登录。</p>
       <label for="current-password">当前密码</label><input id="current-password" type="password" autocomplete="current-password" maxlength="200" required>

@@ -8,4 +8,4 @@ if [ ! -f .env ]; then
   chmod 600 .env
 fi
 mkdir -p data photos/待打印 photos/已完成
-printf '%s\n' '目录已创建。请修改 .env 中的 PRINTER_URI，并确认 PUID/PGID 与目录属主匹配。' '然后运行：docker compose up -d --build'
+printf '%s\n' '目录已创建。请确认 .env 中的 PUID/PGID 与目录属主匹配；打印机可在网页设置中添加。' '然后运行：docker compose up -d --build'

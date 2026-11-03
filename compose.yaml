@@ -1,6 +1,6 @@
 services:
   photo-print:
-    image: shiguang-print:local
+    image: paperlane:local
     build:
       context: .
       args:

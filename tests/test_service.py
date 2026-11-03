@@ -1,5 +1,8 @@
 """Run in the service image; isolated temporary library and fake printer only."""
 import io
+import json
+import devices
+from unittest.mock import MagicMock
 import os
 from pathlib import Path
 import struct
@@ -29,10 +32,21 @@ class ServiceTest(unittest.TestCase):
         for p in self.patchers:
             p.start()
         main.init()
+        self.printer_patch = patch.object(main, 'Printer')
+        self.printer_mock = self.printer_patch.start()
+        self.caps = json.loads((Path(__file__).parent / 'fixtures/fuji-ipp.json').read_text())
+        self.caps.update({'printer-state': [3], 'printer-is-accepting-jobs': [True]})
+        self.printer_mock.return_value.capabilities.return_value = self.caps
+        with main.db() as c:
+            if not devices.all_devices(c):
+                devices.save(c, 'Test printer', 'ipp://192.168.1.10:631/ipp/print', self.caps)
+            else:
+                devices.refresh(c, devices.get(c)['id'], self.caps)
         main.printer_state = {'online': True, 'accepting': True}
 
     def tearDown(self):
         main.stop.set()
+        self.printer_patch.stop()
         for p in reversed(self.patchers):
             p.stop()
         self.tmp.cleanup()
@@ -55,7 +69,7 @@ class ServiceTest(unittest.TestCase):
         prepared = self.prepare()
         blob = (self.data / 'prepared' / (prepared[0]['id'] + '.jpg')).read_bytes()
         with Image.open(io.BytesIO(blob)) as image:
-            self.assertEqual(image.size, (1800, 1200))
+            self.assertEqual(image.size, (1200, 1800))
             self.assertEqual(image.getpixel((0, 0)), (255, 255, 255))
         path = next(self.photos.rglob('*.heic'))
         before = path.read_bytes()
@@ -93,8 +107,8 @@ class ServiceTest(unittest.TestCase):
         class FakePrinter:
             def __init__(self, *args, **kwargs): pass
             def capabilities(self): return {'printer-is-accepting-jobs': [True], 'printer-state': [3]}
-            def validate(self, *args): pass
-            def print_jpeg(self, *args): calls.append(1); raise TimeoutError('simulated loss after send')
+            def validate_ticket(self, *args): pass
+            def print_ticket(self, *args): calls.append(1); raise TimeoutError('simulated loss after send')
         with patch.object(main, 'Printer', FakePrinter):
             thread = threading.Thread(target=main.worker)
             thread.start()
@@ -118,11 +132,11 @@ class ServiceTest(unittest.TestCase):
         class FakePrinter:
             def __init__(self, *args, **kwargs): pass
             def capabilities(self): return {'printer-is-accepting-jobs': [True], 'printer-state': [3]}
-            def validate(self, *args):
+            def validate_ticket(self, *args):
                 job = main.jobs()[0]
                 main.resolve(job['id'], main.Resolve(action='cancel'))
                 main.stop.set()
-            def print_jpeg(self, *args): calls.append(1)
+            def print_ticket(self, *args): calls.append(1)
         with patch.object(main, 'Printer', FakePrinter): main.worker()
         self.assertEqual(calls, [])
         self.assertEqual(main.jobs()[0]['status'], 'cancelled')
@@ -133,8 +147,8 @@ class ServiceTest(unittest.TestCase):
         class FakePrinter:
             def __init__(self, *args, **kwargs): pass
             def capabilities(self): return {'printer-is-accepting-jobs': [True], 'printer-state': [3]}
-            def validate(self, *args): pass
-            def print_jpeg(self, data, media, landscape, dimensions):
+            def validate_ticket(self, *args): pass
+            def print_ticket(self, data, ticket):
                 calls.append(data)
                 return {'job-id': [123]}
             def job(self, job_id):
@@ -247,6 +261,90 @@ class ServiceTest(unittest.TestCase):
         self.assertEqual(parsed['media-size'][0]['x-dimension'][0], 10160)
         with self.assertRaises(ValueError): decode(packet[:-5])
 
+
+    def test_switch_target_rejects_preview(self):
+        prepared=self.prepare()
+        with main.db() as c:
+            other=devices.save(c,'Second','ipp://192.168.1.11/ipp/print',self.caps)
+        with self.assertRaises(main.HTTPException):
+            main.submit(main.Submit(request_id=__import__('uuid').uuid4(),prepared_ids=[prepared[0]['id']],copies=1,confirmed=True,printer_id=other['id']))
+        self.submit(prepared)
+        with main.db() as c:
+            self.assertNotEqual(c.execute('SELECT printer_id FROM jobs').fetchone()[0],other['id'])
+
+    def test_capability_change_expires_preview(self):
+        prepared=self.prepare()
+        changed=__import__('copy').deepcopy(self.caps)
+        changed['printer-resolution-supported']=[{'x':600,'y':600,'units':3}]
+        with main.db() as c:
+            devices.refresh(c,devices.get(c)['id'],changed)
+        with self.assertRaises(main.HTTPException): self.submit(prepared)
+
+    def test_migration_preserves_password_history_and_printer(self):
+        self.submit(self.prepare())
+        main.set_job(main.jobs()[0]['id'],'completed','old history')
+        secret=(self.data/'credentials.json').read_bytes()
+        with main.db() as c:
+            before=dict(c.execute('SELECT * FROM jobs').fetchone())
+        main.init()
+        self.assertEqual((self.data/'credentials.json').read_bytes(),secret)
+        with main.db() as c:
+            self.assertEqual(dict(c.execute('SELECT * FROM jobs').fetchone()),before)
+            self.assertEqual(len(devices.all_devices(c)),1)
+
+    def test_calibration_is_preview_only_and_no_photo_archival(self):
+        response=main.prepare(main.Prepare(calibration=True))
+        self.assertEqual(main.jobs(),[])
+        self.submit(response['prepared'])
+        self.assertEqual(len(main.jobs()),1)
+        with main.db() as c:
+            self.assertEqual(c.execute('SELECT kind FROM prepared').fetchone()[0],'calibration')
+            self.assertEqual(c.execute('SELECT COUNT(*) FROM prepared_sources').fetchone()[0],0)
+
+    def test_real_v1_schema_migrates_history_without_credentials_reset(self):
+        self.submit(self.prepare())
+        main.set_job(main.jobs()[0]['id'], 'completed', 'v1 completed')
+        credentials = (self.data / 'credentials.json').read_bytes()
+        with main.db() as c:
+            for field in ('printer_id', 'ticket', 'kind'):
+                c.execute('ALTER TABLE prepared DROP COLUMN ' + field)
+            c.execute('ALTER TABLE jobs DROP COLUMN printer_id')
+            c.execute('DROP TABLE printers')
+        with patch.object(main, 'URI', 'ipp://192.168.1.10/ipp/print'):
+            main.init()
+        self.assertEqual((self.data / 'credentials.json').read_bytes(), credentials)
+        with main.db() as c:
+            self.assertEqual(devices.get(c)['id'], 'legacy')
+            self.assertEqual(c.execute('SELECT printer_id,status FROM jobs').fetchone()[:], ('legacy','completed'))
+            self.assertIsNone(c.execute('SELECT ticket FROM prepared').fetchone()[0])
+
+    def test_worker_uses_original_device_after_default_switch(self):
+        self.submit(self.prepare())
+        with main.db() as c:
+            original = devices.get(c)['uri']
+            other = devices.save(c,'Second','ipp://192.168.1.11/ipp/print', self.caps)
+        main.printer_action(other['id'], main.DeviceAction(action='default'))
+        destinations=[]
+        class FakePrinter:
+            def __init__(self, uri, **kwargs): destinations.append(uri)
+            def capabilities(self): return {'printer-state':[3], 'printer-is-accepting-jobs':[True]}
+            def validate_ticket(self, ticket): pass
+            def print_ticket(self, data, ticket): return {'job-id':[42]}
+            def job(self, job_id):
+                main.stop.set()
+                return {'job-state':[9]}
+        with patch.object(main,'Printer',FakePrinter): main.worker()
+        self.assertEqual(destinations,[original])
+        self.assertEqual(main.jobs()[0]['status'],'completed')
+
+
+    def test_same_source_on_two_preview_pages_is_rejected(self):
+        first = self.prepare()
+        second = main.prepare(main.Prepare(photos=[{'id':first[0]['photo_id']}]))['prepared']
+        with self.assertRaises(HTTPException) as caught:
+            self.submit(first + second)
+        self.assertIn('同一源照片', caught.exception.detail)
+        self.assertEqual(main.jobs(), [])
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
