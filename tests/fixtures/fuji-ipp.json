@@ -1,0 +1,338 @@
+{
+  "ipp-versions-supported": [
+    "1.0",
+    "1.1",
+    "2.0"
+  ],
+  "operations-supported": [
+    4,
+    2,
+    5,
+    6,
+    8,
+    9,
+    10,
+    11,
+    56,
+    57,
+    59,
+    60
+  ],
+  "document-format-supported": [
+    "image/jpeg",
+    "application/octet-stream",
+    "application/vnd.cups-raster",
+    "image/pwg-raster",
+    "image/urf"
+  ],
+  "media-supported": [
+    "na_index-4x6_4x6in",
+    "oe_photo_3x3in",
+    "custom_min_3x3in",
+    "custom_max_4x6in"
+  ],
+  "media-ready": [
+    "na_index-4x6_4x6in"
+  ],
+  "media-col-database": [
+    {
+      "media-size": [
+        {
+          "x-dimension": [
+            10160
+          ],
+          "y-dimension": [
+            15240
+          ]
+        }
+      ],
+      "media-left-margin": [
+        254
+      ],
+      "media-right-margin": [
+        254
+      ],
+      "media-top-margin": [
+        254
+      ],
+      "media-bottom-margin": [
+        254
+      ],
+      "media-type": [
+        "stationery"
+      ]
+    },
+    {
+      "media-size": [
+        {
+          "x-dimension": [
+            10160
+          ],
+          "y-dimension": [
+            15240
+          ]
+        }
+      ],
+      "media-left-margin": [
+        0
+      ],
+      "media-right-margin": [
+        0
+      ],
+      "media-top-margin": [
+        0
+      ],
+      "media-bottom-margin": [
+        0
+      ],
+      "media-type": [
+        "stationery"
+      ]
+    },
+    {
+      "media-size": [
+        {
+          "x-dimension": [
+            7620
+          ],
+          "y-dimension": [
+            7620
+          ]
+        }
+      ],
+      "media-left-margin": [
+        254
+      ],
+      "media-right-margin": [
+        254
+      ],
+      "media-top-margin": [
+        254
+      ],
+      "media-bottom-margin": [
+        254
+      ],
+      "media-type": [
+        "stationery"
+      ]
+    },
+    {
+      "media-size": [
+        {
+          "x-dimension": [
+            7620
+          ],
+          "y-dimension": [
+            7620
+          ]
+        }
+      ],
+      "media-left-margin": [
+        0
+      ],
+      "media-right-margin": [
+        0
+      ],
+      "media-top-margin": [
+        0
+      ],
+      "media-bottom-margin": [
+        0
+      ],
+      "media-type": [
+        "stationery"
+      ]
+    },
+    {
+      "media-top-margin": [
+        0
+      ],
+      "media-bottom-margin": [
+        0
+      ],
+      "media-left-margin": [
+        0
+      ],
+      "media-right-margin": [
+        0
+      ],
+      "media-size": [
+        {
+          "x-dimension": [
+            [
+              7620,
+              10160
+            ]
+          ],
+          "y-dimension": [
+            [
+              7620,
+              15240
+            ]
+          ]
+        }
+      ]
+    }
+  ],
+  "media-col-ready": [
+    {
+      "media-source": [
+        "main"
+      ],
+      "media-size": [
+        {
+          "x-dimension": [
+            10160
+          ],
+          "y-dimension": [
+            15240
+          ]
+        }
+      ],
+      "media-left-margin": [
+        254
+      ],
+      "media-right-margin": [
+        254
+      ],
+      "media-top-margin": [
+        254
+      ],
+      "media-bottom-margin": [
+        254
+      ],
+      "media-type": [
+        "auto"
+      ]
+    },
+    {
+      "media-source": [
+        "main"
+      ],
+      "media-size": [
+        {
+          "x-dimension": [
+            10160
+          ],
+          "y-dimension": [
+            15240
+          ]
+        }
+      ],
+      "media-left-margin": [
+        0
+      ],
+      "media-right-margin": [
+        0
+      ],
+      "media-top-margin": [
+        0
+      ],
+      "media-bottom-margin": [
+        0
+      ],
+      "media-type": [
+        "auto"
+      ]
+    }
+  ],
+  "media-size-supported": [
+    {
+      "x-dimension": [
+        7620
+      ],
+      "y-dimension": [
+        7620
+      ]
+    },
+    {
+      "x-dimension": [
+        10160
+      ],
+      "y-dimension": [
+        15240
+      ]
+    },
+    {
+      "x-dimension": [
+        [
+          7620,
+          10160
+        ]
+      ],
+      "y-dimension": [
+        [
+          7620,
+          15240
+        ]
+      ]
+    }
+  ],
+  "media-left-margin-supported": [
+    254,
+    0
+  ],
+  "media-right-margin-supported": [
+    254,
+    0
+  ],
+  "media-top-margin-supported": [
+    254,
+    0
+  ],
+  "media-bottom-margin-supported": [
+    254,
+    0
+  ],
+  "printer-resolution-supported": [
+    {
+      "x": 300,
+      "y": 300,
+      "units": 3
+    }
+  ],
+  "printer-resolution-default": [
+    {
+      "x": 300,
+      "y": 300,
+      "units": 3
+    }
+  ],
+  "print-scaling-supported": [
+    "auto",
+    "auto-fit",
+    "fill",
+    "fit",
+    "none"
+  ],
+  "print-quality-supported": [
+    3,
+    4,
+    5
+  ],
+  "job-creation-attributes-supported": [
+    "copies",
+    "finishings",
+    "ipp-attribute-fidelity",
+    "media",
+    "media-col",
+    "orientation-requested",
+    "output-bin",
+    "job-impressions",
+    "job-impressions-estimate",
+    "job-media-sheets",
+    "print-color-mode",
+    "print-content-optimize",
+    "print-quality",
+    "print-scaling",
+    "printer-resolution",
+    "sides",
+    "job-name"
+  ],
+  "copies-supported": [
+    [
+      1,
+      99
+    ]
+  ]
+}

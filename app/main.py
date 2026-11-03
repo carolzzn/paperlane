@@ -17,7 +17,9 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 
-from imaging import render_sheet, thumbnail, icon_png, PAPERS, LAYOUT_CAPACITY
+from imaging import render_page, thumbnail, icon_png
+from capabilities import make_ticket, page_geometry
+import devices
 from ipp import Printer
 from security import Credentials
 
@@ -31,7 +33,7 @@ FORMATS = {'.heic', '.heif', '.jpg', '.jpeg', '.png'}
 scan_lock = threading.Lock()
 image_lock = threading.Lock()
 session_lock = threading.Lock()
-queue_lock = threading.Lock()
+queue_lock = threading.RLock()
 archive_lock = threading.Lock()
 sessions = {}
 attempts = collections.defaultdict(list)
@@ -70,6 +72,7 @@ def init():
                 c.execute('ALTER TABLE prepared ADD COLUMN ' + name + ' TEXT')
         if 'paper' not in columns:
             c.execute("ALTER TABLE prepared ADD COLUMN paper TEXT DEFAULT '6inch'")
+        devices.initialize(c, URI, PRINTER_NAME)
         # A crash during submission is ambiguous: never automatically print again.
         c.execute("UPDATE jobs SET status='unknown',message='服务在发送或等待期间重启，请先核对是否已出片，勿直接重复打印',updated=? WHERE status IN ('sending','submitted')", (time.time(),))
 
@@ -135,18 +138,22 @@ def scan():
 
 def update_printer():
     global printer_state
-    if not URI:
-        printer_state = {'online': False, 'name': PRINTER_NAME, 'message': '尚未设置打印机地址，请配置 PRINTER_URI', 'checked': time.time()}
-        return
-    try:
-        a = Printer(URI, timeout=6).capabilities()
-        state = a.get('printer-state', [0])[0]
-        printer_state = {'online': True, 'state': state, 'name': a.get('printer-name', [PRINTER_NAME])[0],
-                         'message': {3: '空闲，可以打印', 4: '正在打印', 5: '打印机已暂停'}.get(state, '已连接'),
-                         'reasons': a.get('printer-state-reasons', []), 'accepting': a.get('printer-is-accepting-jobs', [False])[0],
-                         'queued': a.get('queued-job-count', [0])[0], 'checked': time.time()}
-    except Exception:
-        printer_state = {'online': False, 'name': PRINTER_NAME, 'message': '打印机未连接，请确认开机并连接家庭 Wi-Fi', 'checked': time.time()}
+    with db() as c:
+        targets = devices.all_devices(c)
+    for target in targets:
+        try:
+            attrs = Printer(target['uri'], timeout=4, lan_only=True).capabilities()
+            with queue_lock, db() as c:
+                current = devices.get(c, target['id'])
+                if current['revision'] == target['revision']:
+                    devices.refresh(c, target['id'], attrs)
+        except Exception:
+            with db() as c:
+                state = {'online': False, 'accepting': False, 'message': '未连接，请确认开机和家庭 Wi-Fi', 'checked': time.time()}
+                c.execute('UPDATE printers SET state=? WHERE id=?', (json.dumps(state, ensure_ascii=False), target['id']))
+    with db() as c:
+        targets = devices.all_devices(c)
+    printer_state = dict(targets[0]['state'], name=targets[0]['name']) if targets else {'online': False, 'accepting': False, 'message': '请在设置中添加打印机'}
 
 
 def set_job(job_id, status, message, printer_job=None):
@@ -227,19 +234,21 @@ def worker():
     while not stop.is_set():
         with db() as c:
             ambiguous = c.execute("SELECT 1 FROM jobs WHERE status='unknown' LIMIT 1").fetchone()
-            job = c.execute("SELECT j.*,p.landscape,p.paper FROM jobs j JOIN prepared p ON p.id=j.prepared_id WHERE status='pending' ORDER BY j.created,j.rowid LIMIT 1").fetchone()
+            job = c.execute("SELECT j.*,p.ticket,p.kind FROM jobs j JOIN prepared p ON p.id=j.prepared_id WHERE status='pending' ORDER BY j.created,j.rowid LIMIT 1").fetchone()
         if job is None or ambiguous:
             stop.wait(2)
             continue
-        printer = Printer(URI, timeout=30)
-        spec = PAPERS[job['paper']]
         try:
+            ticket = json.loads(job['ticket'])
+            with db() as c:
+                devices.assert_ticket(c, ticket)
+            printer = Printer(ticket['printer_uri'], timeout=30, lan_only=True)
             data = (DATA / 'prepared' / (job['prepared_id'] + '.jpg')).read_bytes()
             caps = printer.capabilities()
             if not caps.get('printer-is-accepting-jobs', [False])[0] or caps.get('printer-state', [0])[0] == 5:
                 set_job(job['id'], 'failed', '打印机未就绪，本张未发送')
                 continue
-            printer.validate(spec['media'], bool(job['landscape']), spec['hundredths_mm'])
+            printer.validate_ticket(ticket)
         except Exception:
             set_job(job['id'], 'failed', '连接或格式验证失败，本张未发送，请检查打印机')
             continue
@@ -248,7 +257,7 @@ def worker():
             if claim.rowcount != 1:
                 continue
         try:
-            answer = printer.print_jpeg(data, spec['media'], bool(job['landscape']), spec['hundredths_mm'])
+            answer = printer.print_ticket(data, ticket)
             printer_job = answer.get('job-id', [None])[0]
             if not isinstance(printer_job, int):
                 raise ValueError('没有返回任务编号')
@@ -266,7 +275,8 @@ def worker():
                 state = attrs.get('job-state', [0])[0]
                 if state == 9:
                     set_job(job['id'], 'completed', '打印机报告已完成')
-                    archive_completed(job['prepared_id'])
+                    if job['kind'] != 'calibration':
+                        archive_completed(job['prepared_id'])
                     break
                 if state in (7, 8):
                     set_job(job['id'], 'failed', '打印机报告任务已取消或中止，请检查是否部分出片')
@@ -283,7 +293,7 @@ def maintenance():
             last_scan = time.time()
         update_printer()
         with db() as c:
-            ready = [r[0] for r in c.execute("SELECT DISTINCT j.prepared_id FROM jobs j LEFT JOIN archives a ON a.prepared_id=j.prepared_id WHERE j.status='completed' AND (a.status IS NULL OR a.status<>'archived') AND NOT EXISTS (SELECT 1 FROM jobs k WHERE k.prepared_id=j.prepared_id AND k.status<>'completed')")]
+            ready = [r[0] for r in c.execute("SELECT DISTINCT j.prepared_id FROM jobs j LEFT JOIN archives a ON a.prepared_id=j.prepared_id WHERE j.prepared_id IN (SELECT id FROM prepared WHERE kind='photo') AND j.status='completed' AND (a.status IS NULL OR a.status<>'archived') AND NOT EXISTS (SELECT 1 FROM jobs k WHERE k.prepared_id=j.prepared_id AND k.status<>'completed')")]
         for prepared_id in ready:
             archive_completed(prepared_id)
         with db() as c:
@@ -413,13 +423,65 @@ def status():
         count = c.execute('SELECT COUNT(*) FROM photos').fetchone()[0]
         latest = c.execute('SELECT MAX(day) FROM photos WHERE day<>?', ('其他照片',)).fetchone()[0]
         archived = c.execute("SELECT COUNT(*) FROM archives WHERE status='archived'").fetchone()[0]
-    return {'version': '0.1.0', 'printer': printer_state, 'library': dict(scan_state, count=count, latest=latest, archived=archived)}
+    return {'version': '0.2.0', 'printer': printer_state, 'library': dict(scan_state, count=count, latest=latest, archived=archived)}
 
 
 @app.get('/api/dates')
 def dates():
     with db() as c:
         return [dict(row) for row in c.execute('SELECT day,COUNT(*) AS count FROM photos GROUP BY day ORDER BY day DESC')]
+
+
+@app.get('/api/printers')
+def printers():
+    with db() as c:
+        return devices.all_devices(c)
+
+
+class AddPrinter(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    uri: str = Field(min_length=8, max_length=512)
+
+
+@app.post('/api/printers')
+def add_printer(payload: AddPrinter):
+    try:
+        printer = Printer(payload.uri.strip(), timeout=8, lan_only=True)
+        attrs = printer.capabilities()
+        with queue_lock, db() as c:
+            return devices.save(c, payload.name.strip() or '照片打印机', payload.uri.strip(), attrs)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception:
+        raise HTTPException(409, '无法连接，请核对 IPP 地址、开机状态和证书；尚未保存')
+
+
+class DeviceAction(BaseModel):
+    action: str
+
+
+@app.post('/api/printers/{printer_id}')
+def printer_action(printer_id: str, payload: DeviceAction):
+    try:
+        with db() as c:
+            device = devices.get(c, printer_id)
+        attrs = Printer(device['uri'], timeout=8, lan_only=True).capabilities() if payload.action == 'refresh' else None
+        with queue_lock, db() as c:
+            if payload.action == 'refresh':
+                devices.refresh(c, printer_id, attrs)
+            elif payload.action == 'default':
+                c.execute('UPDATE printers SET is_default=0')
+                c.execute('UPDATE printers SET is_default=1 WHERE id=?', (printer_id,))
+            elif payload.action == 'remove':
+                devices.busy(c, printer_id)
+                c.execute('UPDATE printers SET enabled=0,is_default=0 WHERE id=?', (printer_id,))
+            else:
+                raise ValueError('操作不正确')
+        return {'ok': True}
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception:
+        raise HTTPException(409, '能力刷新失败，请检查设备连接')
 
 
 @app.get('/api/photos')
@@ -466,32 +528,51 @@ class Selection(BaseModel):
 
 
 class Prepare(BaseModel):
-    photos: list[Selection] = Field(min_length=1, max_length=10)
+    photos: list[Selection] = Field(default_factory=list, max_length=10)
+    printer_id: str | None = None
+    media_id: str | None = None
+    resolution_id: str | None = None
+    custom_width_mm: float | None = Field(default=None, ge=10, le=1000)
+    custom_height_mm: float | None = Field(default=None, ge=10, le=1000)
     fit: str = 'contain'
-    paper: str = '6inch'
     layout: str = 'single'
-    border_mm: int = Field(default=0, ge=0, le=10)
-    gap_mm: int = Field(default=2, ge=0, le=10)
+    border_mm: float = Field(default=0, ge=0, le=20)
+    gap_mm: float = Field(default=2, ge=0, le=20)
+    photo_width_mm: float | None = Field(default=None, ge=5, le=1000)
+    photo_height_mm: float | None = Field(default=None, ge=5, le=1000)
+    repeat: bool = False
+    calibration: bool = False
     background: str = '#ffffff'
 
 
 @app.post('/api/prepare')
 def prepare(payload: Prepare):
-    if payload.paper != '6inch':
-        raise HTTPException(400, '当前仅使用 6 寸相纸；需要小尺寸照片时请选择 3 寸方形双拼排版后裁切')
     if payload.fit not in ('contain', 'cover') or any(p.rotation not in (0, 90, 180, 270) for p in payload.photos):
         raise HTTPException(400, '排版参数不正确')
-    if payload.paper not in PAPERS or payload.layout not in LAYOUT_CAPACITY or payload.background not in ('#ffffff', '#f4ead7', '#151515'):
-        raise HTTPException(400, '请选择支持的相纸和排版')
-    if payload.layout == 'square3' and payload.paper != '6inch':
-        raise HTTPException(400, '3 寸方形双拼需要使用 6 寸相纸')
+    if payload.background not in ('#ffffff', '#f4ead7', '#151515'):
+        raise HTTPException(400, '请选择支持的底色')
+    if not payload.calibration and not payload.photos:
+        raise HTTPException(400, '请先选择照片')
     if len({p.id for p in payload.photos}) != len(payload.photos):
-        raise HTTPException(400, '同一张照片请通过份数选择打印数量')
+        raise HTTPException(400, '重复照片请使用铺满或份数设置')
+    if payload.repeat and len(payload.photos) != 1:
+        raise HTTPException(400, '重复铺满时请只选一张照片')
+    try:
+        with db() as c:
+            device = devices.get(c, payload.printer_id)
+        ticket = make_ticket(device, payload.media_id, payload.resolution_id, payload.custom_width_mm, payload.custom_height_mm)
+        layout = 'single' if payload.calibration else payload.layout
+        geometry = page_geometry(ticket, layout, payload.border_mm, payload.gap_mm, payload.photo_width_mm, payload.photo_height_mm)
+        Printer(device['uri'], timeout=8, lan_only=True).validate_ticket(ticket)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception:
+        raise HTTPException(409, '设备未能确认这些参数，请检查连接、相纸和分辨率')
     prepared = []
-    capacity = LAYOUT_CAPACITY[payload.layout]
+    capacity = geometry['capacity']
+    groups = [[]] if payload.calibration else [payload.photos[i:i + capacity] for i in range(0, len(payload.photos), capacity)]
     with image_lock:
-        for start in range(0, len(payload.photos), capacity):
-            group = payload.photos[start:start + capacity]
+        for group in groups:
             items, sources = [], []
             try:
                 for item in group:
@@ -500,21 +581,23 @@ def prepare(payload: Prepare):
                     sha = file_hash(source)
                     items.append({'path': source, 'rotation': item.rotation, 'x': item.x, 'y': item.y})
                     sources.append({'photo_id': item.id, 'source_rel': row['rel'], 'source_sha256': sha})
-                data, landscape, sizes = render_sheet(items, payload.paper, payload.layout, payload.fit, payload.border_mm, payload.gap_mm, payload.background)
+                data, geometry, sizes = render_page(items, ticket, layout, payload.fit, payload.border_mm, payload.gap_mm, payload.background, payload.photo_width_mm, payload.photo_height_mm, payload.repeat, payload.calibration)
                 if any(file_hash(item['path']) != source['source_sha256'] for item, source in zip(items, sources)):
-                    raise HTTPException(409, '照片仍在上传或已被修改，请上传完成后再生成预览')
+                    raise HTTPException(409, '照片仍在上传或已被修改，请上传完成后重新预览')
             except HTTPException:
                 raise
+            except ValueError as e:
+                raise HTTPException(422, str(e))
             except Exception:
-                raise HTTPException(422, '有照片无法转换，请上传完成或更换照片后重试')
+                raise HTTPException(422, '照片无法转换，请上传完成或更换照片后重试')
             key = uuid.uuid4().hex
             (DATA / 'prepared' / (key + '.jpg')).write_bytes(data)
-            first = sources[0]
+            source = sources[0] if sources else {}
             with db() as c:
-                c.execute('INSERT INTO prepared(id,photo_id,landscape,fit,rotation,created,width,height,source_rel,source_sha256,paper) VALUES(?,?,?,?,?,?,?,?,?,?,?)', (key, first['photo_id'], int(landscape), payload.fit, group[0].rotation, time.time(), sizes[0][0], sizes[0][1], first['source_rel'], first['source_sha256'], payload.paper))
+                c.execute('INSERT INTO prepared(id,photo_id,landscape,fit,rotation,created,width,height,source_rel,source_sha256,paper,printer_id,ticket,kind) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)', (key, source.get('photo_id'), 0, payload.fit, 0, time.time(), *geometry['pixels'], source.get('source_rel'), source.get('source_sha256'), ticket['media']['label'], device['id'], json.dumps(ticket), 'calibration' if payload.calibration else 'photo'))
                 c.executemany('INSERT INTO prepared_sources VALUES(?,?,?,?)', [(key, r['photo_id'], r['source_rel'], r['source_sha256']) for r in sources])
-            prepared.append({'id': key, 'photo_id': first['photo_id'], 'photo_ids': [r['photo_id'] for r in sources], 'landscape': landscape, 'source_size': sizes[0], 'low_resolution': any(min(size) < 800 for size in sizes)})
-    return {'prepared': prepared, 'paper': PAPERS[payload.paper]['label'], 'sheets': len(prepared)}
+            prepared.append({'id': key, 'photo_id': source.get('photo_id'), 'photo_ids': [r['photo_id'] for r in sources], 'landscape': False, 'source_size': sizes[0] if sizes else [], 'low_resolution': any(min(size) < 800 for size in sizes)})
+    return {'prepared': prepared, 'paper': ticket['media']['label'], 'printer_id': device['id'], 'printer_name': device['name'], 'sheets': len(prepared), 'geometry': geometry, 'resolution': ticket['resolution']['label'], 'calibration': payload.calibration}
 
 
 @app.get('/api/preview/{prepared_id}')
@@ -528,6 +611,7 @@ def preview(prepared_id: str):
 
 class Submit(BaseModel):
     request_id: uuid.UUID
+    printer_id: str | None = None
     prepared_ids: list[str] = Field(min_length=1, max_length=10)
     copies: int = Field(ge=1, le=5)
     confirmed: bool
@@ -538,7 +622,7 @@ def submit(payload: Submit):
     if not payload.confirmed or len(payload.prepared_ids) * payload.copies > 10:
         raise HTTPException(400, '请确认预览，每批最多打印 10 张')
     submission_id = str(payload.request_id)
-    canonical = json.dumps([payload.prepared_ids, payload.copies])
+    canonical = json.dumps([payload.prepared_ids, payload.copies, payload.printer_id])
     with queue_lock, db() as c:
         c.execute('BEGIN IMMEDIATE')
         previous = c.execute('SELECT payload FROM submissions WHERE id=?', (submission_id,)).fetchone()
@@ -548,18 +632,31 @@ def submit(payload: Submit):
             return {'id': submission_id, 'duplicate': True}
         if c.execute("SELECT 1 FROM jobs WHERE status IN ('pending','sending','submitted','unknown') LIMIT 1").fetchone():
             raise HTTPException(409, '已有打印任务，请先等待完成或核对未确认的任务')
-        if not printer_state.get('online') or not printer_state.get('accepting'):
-            raise HTTPException(409, '打印机未就绪，请确认开机后稍候')
         if len(set(payload.prepared_ids)) != len(payload.prepared_ids):
             raise HTTPException(400, '排版页不能重复，请使用份数选择')
+        occupied_sources = set()
         for key in payload.prepared_ids:
             row = c.execute('SELECT * FROM prepared WHERE id=?', (key,)).fetchone()
             if row is None or time.time() - row['created'] > 3600:
                 raise HTTPException(400, '预览已过期，请重新生成')
+            try:
+                if not row['ticket']:
+                    raise ValueError('旧预览已过期，请重新排版')
+                ticket = json.loads(row['ticket'])
+                device = devices.assert_ticket(c, ticket)
+                if payload.printer_id and device['id'] != payload.printer_id:
+                    raise ValueError('所选打印机已变化，请重新预览')
+                if not device['state'].get('online') or not device['state'].get('accepting') or device['state'].get('state') == 5:
+                    raise ValueError('打印机未就绪，请确认开机后稍候')
+            except ValueError as e:
+                raise HTTPException(409, str(e))
             sources = c.execute('SELECT * FROM prepared_sources WHERE prepared_id=?', (key,)).fetchall()
-            if not sources:
+            if not sources and row['kind'] != 'calibration':
                 raise HTTPException(400, '请从待打印文件夹重新选择照片')
             for item in sources:
+                if item['photo_id'] in occupied_sources:
+                    raise HTTPException(409, '同一源照片不能出现在多份预览页中，请重新排版或使用份数')
+                occupied_sources.add(item['photo_id'])
                 source = ROOT / item['source_rel']
                 if source.is_symlink() or not source.resolve().is_relative_to(ROOT) or not source.is_file() or file_hash(source) != item['source_sha256']:
                     raise HTTPException(409, '待打印照片已移动、已打印或被修改，请刷新列表后重新选片')
@@ -569,14 +666,14 @@ def submit(payload: Submit):
         for key in payload.prepared_ids:
             for _ in range(payload.copies):
                 now = time.time()
-                c.execute('INSERT INTO jobs VALUES(?,?,?,?,?,?,?,?)', (uuid.uuid4().hex, submission_id, key, 'pending', None, '等待发送', now, now,))
+                c.execute('INSERT INTO jobs(id,submission,prepared_id,status,printer_job,message,created,updated,printer_id) VALUES(?,?,?,?,?,?,?,?,?)', (uuid.uuid4().hex, submission_id, key, 'pending', None, '等待发送', now, now, c.execute('SELECT printer_id FROM prepared WHERE id=?', (key,)).fetchone()[0]))
     return {'id': submission_id, 'duplicate': False}
 
 
 @app.get('/api/jobs')
 def jobs():
     with db() as c:
-        return [dict(r) for r in c.execute('SELECT id,submission,status,message,created,updated FROM jobs ORDER BY created DESC,rowid DESC LIMIT 50')]
+        return [dict(r) for r in c.execute("SELECT j.id,j.submission,j.status,j.message,j.created,j.updated,j.printer_id,COALESCE(d.name,'原打印机') AS printer_name FROM jobs j LEFT JOIN printers d ON d.id=j.printer_id ORDER BY j.created DESC,j.rowid DESC LIMIT 50")]
 
 
 class Resolve(BaseModel):
@@ -630,16 +727,16 @@ def icon():
 
 @app.get('/manifest.webmanifest')
 def manifest():
-    return JSONResponse({'name': '拾光印 · NAS 照片打印', 'short_name': '拾光印', 'start_url': '/', 'display': 'standalone', 'background_color': '#f4f2ec', 'theme_color': '#f4f2ec', 'icons': [{'src': '/icon-192.png', 'sizes': '192x192', 'type': 'image/png'}, {'src': '/icon-512.png', 'sizes': '512x512', 'type': 'image/png'}]})
+    return JSONResponse({'name': '纸间 Paperlane · NAS 照片打印', 'short_name': '纸间 Paperlane', 'start_url': '/', 'display': 'standalone', 'background_color': '#f4f2ec', 'theme_color': '#f4f2ec', 'icons': [{'src': '/icon-192.png', 'sizes': '192x192', 'type': 'image/png'}, {'src': '/icon-512.png', 'sizes': '512x512', 'type': 'image/png'}]})
 
 
 @app.get('/touch-icon.png')
 def touch_icon():
-    return Response(icon_png(180), media_type='image/png')
+    return FileResponse(STATIC / 'icon-192.png', media_type='image/png')
 
 
 @app.get('/icon-{size}.png')
 def png_icon(size: int):
     if size not in (192, 512):
         raise HTTPException(404)
-    return Response(icon_png(size), media_type='image/png')
+    return FileResponse(STATIC / ('icon-' + str(size) + '.png'), media_type='image/png')

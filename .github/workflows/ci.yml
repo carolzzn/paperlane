@@ -17,10 +17,10 @@ jobs:
       - run: pip install -r requirements.txt
       - run: PYTHONPATH=app python -m unittest discover -s tests -v
       - run: docker compose config --quiet
-      - run: docker build -t shiguang-print:ci .
+      - run: docker build -t paperlane:ci .
       - name: Verify the web page runs as a non-root user
         run: |
-          docker run -d --name print-smoke --network none --user 1000:1000 --tmpfs /data:rw,mode=1777 --cap-drop ALL shiguang-print:ci
+          docker run -d --name print-smoke --network none --user 1000:1000 --tmpfs /data:rw,mode=1777 --cap-drop ALL paperlane:ci
           docker exec -i print-smoke python - <<'PY'
           import time, urllib.request
           for attempt in range(30):

@@ -2,6 +2,7 @@ import io
 from functools import lru_cache
 from PIL import Image, ImageCms, ImageOps, ImageDraw
 from pillow_heif import register_heif_opener
+from capabilities import page_geometry
 
 register_heif_opener(thumbnails=False)
 Image.MAX_IMAGE_PIXELS = 90_000_000
@@ -122,3 +123,66 @@ def render_sheet(items, paper='6inch', layout='single', fit='contain', border_mm
     buf = io.BytesIO()
     canvas.save(buf, 'JPEG', quality=95, subsampling=0, dpi=(300, 300))
     return buf.getvalue(), landscape, source_sizes
+
+
+def render_page(items, ticket, layout='single', fit='contain', border_mm=0, gap_mm=2, background='#ffffff', photo_width_mm=None, photo_height_mm=None, repeat=False, calibration=False):
+    geometry = page_geometry(ticket, layout, border_mm, gap_mm, photo_width_mm, photo_height_mm)
+    dx, dy = geometry['dpi']
+    def point(x, y):
+        return round(x / 25.4 * dx), round(y / 25.4 * dy)
+    canvas = Image.new('RGB', geometry['pixels'], background)
+    sizes = []
+    if calibration:
+        draw = ImageDraw.Draw(canvas)
+        left, top, right, bottom = geometry['margins_mm']
+        length = min(50, geometry['width_mm'] - left - right - 10)
+        if length < 10:
+            raise ValueError('可打印区域太小，无法生成标尺')
+        x, y = left + 5, top + 12
+        draw.text(point(x, top + 3), 'Paperlane / millimetres / scaling NONE', fill='black')
+        draw.line((*point(x, y), *point(x + length, y)), fill='black', width=2)
+        for i in range(int(length) + 1):
+            draw.line((*point(x + i, y), *point(x + i, y + (5 if i % 10 == 0 else 2))), fill='black', width=2)
+            if i % 10 == 0:
+                draw.text(point(x + i, y + 6), str(i), fill='black')
+        draw.rectangle((*point(x, y + 15), *point(x + 10, y + 25)), outline='black', width=2)
+        draw.text(point(x, y + 28), '10 x 10 mm', fill='black')
+    else:
+        for index, slot in enumerate(geometry['slots']):
+            if index >= len(items) and not repeat:
+                break
+            item = items[index % len(items)]
+            image = open_photo(item['path'])
+            if item.get('rotation'):
+                image = image.rotate(-item['rotation'], expand=True)
+            sizes.append(image.size)
+            x, y, w, h = slot
+            x0, y0 = point(x, y)
+            x1, y1 = point(x + w, y + h)
+            size = (x1 - x0, y1 - y0)
+            # Use square-pixel working coordinates, then resample independently
+            # along the device axes. Non-square DPI must not stretch a face.
+            work_size = (max(1, round(w / 25.4 * max(dx, dy))), max(1, round(h / 25.4 * max(dx, dy))))
+            if work_size[0] * work_size[1] > 40_000_000:
+                scale = (40_000_000 / (work_size[0] * work_size[1])) ** .5
+                work_size = (max(1, round(work_size[0] * scale)), max(1, round(work_size[1] * scale)))
+            if fit == 'cover':
+                tile = ImageOps.fit(image, work_size, method=Image.Resampling.LANCZOS, centering=(item.get('x', .5), item.get('y', .5)))
+            else:
+                fitted = ImageOps.contain(image, work_size, method=Image.Resampling.LANCZOS)
+                tile = Image.new('RGB', work_size, background)
+                tile.paste(fitted, ((work_size[0] - fitted.width) // 2, (work_size[1] - fitted.height) // 2))
+            canvas.paste(tile.resize(size, Image.Resampling.LANCZOS), (x0, y0))
+    if not calibration and layout == 'square3':
+        draw = ImageDraw.Draw(canvas)
+        for x,y,w,h in geometry['slots']:
+            for corner_x in (x,x+w):
+                for corner_y in (y,y+h):
+                    draw.line((*point(corner_x-1.5,corner_y), *point(corner_x-.3,corner_y)), fill='#bbbbbb', width=1)
+                    draw.line((*point(corner_x+.3,corner_y), *point(corner_x+1.5,corner_y)), fill='#bbbbbb', width=1)
+    buf = io.BytesIO()
+    canvas.save(buf, 'JPEG', quality=95, subsampling=0, dpi=(round(dx), round(dy)))
+    data = buf.getvalue()
+    if len(data) > ticket['jpeg_max_bytes']:
+        raise ValueError('排版文件超过此设备的 JPEG 大小限制')
+    return data, geometry, sizes
